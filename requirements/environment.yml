@@ -175,3 +175,5 @@ dependencies:
   - xz=5.2.6
   - zlib=1.2.13
   - zstd=1.5.2
+  - pip:
+      - elasticsearch==8.9.0
