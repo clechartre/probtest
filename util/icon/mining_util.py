@@ -251,7 +251,6 @@ def log_mining(directory_path: str, es: Elasticsearch) -> None:
 
     for filename in os.listdir(directory_path):
         if filename.startswith("LOG."):
-            print("here!!!!")
             logger.info("Processing file: %s", filename)
 
             file_path = os.path.join(directory_path, filename)
@@ -272,10 +271,8 @@ def log_mining(directory_path: str, es: Elasticsearch) -> None:
             # Make the result dictionary
             for table in tables:
                 for line in table.lines[1:]:
-                    print("processing")
                     results_dataclass = line_to_dataclass(line)
                     result_dict = asdict(results_dataclass)
                     result_dict["time_stamp"] = latest_date
-                    print("sending dict to update_kibana")
                     # Update onto monitoring stack
                     update_kibana(es, result_dict)
