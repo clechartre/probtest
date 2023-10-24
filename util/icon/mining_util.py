@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 # Third-party
 from elasticsearch import Elasticsearch
@@ -38,7 +38,7 @@ class MatchResultsICON:
     total_max: list = field(default_factory=list)
     total_max_rank: list = field(default_factory=list)
     total_avg: list = field(default_factory=list)
-    pe: list = field(default_factory=list)
+    pe: Optional[list] = field(default_factory=list)
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -115,7 +115,14 @@ def isolate_table(full_file: str, header_regex: str) -> List[Table]:
     log_file = [e for e in full_file.split("\n") if e]
 
     # Find header lines
-    header_lines = [i for i, e in enumerate(log_file) if re.search(header_regex, e)]
+    all_header_lines = [i for i, e in enumerate(log_file) if re.search(header_regex, e)]
+    # Filter out unwanted tables
+    header_lines = []
+    for line_index in all_header_lines:
+        actual_line = log_file[line_index]
+        processed_header = process_line(actual_line)
+        if len(processed_header) >= 12:  # Only keep headers of length 12 or more
+            header_lines.append(line_index)
 
     # find end line (footer)
     pattern = r"-" * 165
@@ -140,7 +147,6 @@ def isolate_table(full_file: str, header_regex: str) -> List[Table]:
 
         # Remove this footer so it won't be used again
         footer_lines.remove(end)
-
     return tables
 
 
@@ -159,14 +165,11 @@ def remove_formatting(tables: list) -> list:
     """
     for table in tables:
         processed_lines = [process_line(line) for line in table.lines]
-
-        # Get the maximum length after processing
-        max_length = max(len(line) for line in processed_lines)
-
         # Filter lines that have the same length as the maximum length
         new_lines = []
         for line in processed_lines:
-            if len(line) == max_length:
+            # Nb of values in the dataclass
+            if len(line) == 13 or len(line) == 12:
                 new_lines.append(line)
             else:
                 logging.info("Removed line for value %s", {line[0]})
@@ -204,24 +207,28 @@ def line_to_dataclass(line: list) -> MatchResultsICON:
         tables (list): tables extracted from the log
 
     Returns:
-        MatchResultsICON: ifnromation stored into a dataclass
+        MatchResultsICON: information stored into a dataclass
 
     """
     results_dataclass = MatchResultsICON()
     # List of attribute names in the order they should be accessed
     attribute_names = [field.name for field in fields(MatchResultsICON)]
 
-    # Check if the line has the right number of values for all attributes
-    if len(line) == len(attribute_names):
-        for i, attr_name in enumerate(attribute_names):
-            try:
-                value = float(line[i])
-                getattr(results_dataclass, attr_name).append(value)
-            except ValueError:
-                getattr(results_dataclass, attr_name).append(line[i])
-    # If not the right length, skip the line
-    else:
-        pass
+    # Iterate through the line items
+    for i, value in enumerate(line):
+        try:
+            # If the current attribute is supposed to be a float
+            value = float(value)
+            getattr(results_dataclass, attribute_names[i]).append(value)
+        except ValueError:
+            # Here add processing if time also is in the form of 1mxxs
+            match = re.search(r"(\d+)m(\d+)", value)
+            if match:
+                minutes, seconds = match.groups()
+                total_seconds = float(minutes) * 60 + float(seconds)
+                getattr(results_dataclass, attribute_names[i]).append(total_seconds)
+            else:
+                getattr(results_dataclass, attribute_names[i]).append(value)
 
     return results_dataclass
 
@@ -258,6 +265,9 @@ def log_mining(directory_path: str, es: Elasticsearch) -> None:
             # Mine file
             full_file = read_logfile(file_path)
             result = isolate_table(full_file, header_regex)
+            if result is None:
+                logger.info("No result table found, exiting")
+                break
             tables = remove_formatting(result)
 
             # Process the time stamp

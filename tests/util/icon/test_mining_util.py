@@ -94,9 +94,49 @@ class TestRemoveFormatting:
         "tables, mocked_processed_lines, expected_output",
         [
             (
-                [MockTable(["test1   ", "test2   ", "   test3"])],
-                [["test1"], ["test2"], ["test3"]],
-                [MockTable([["test1"], ["test2"], ["test3"]])],
+                [
+                    MockTable(
+                        [
+                            "test1   test2     test3 test4 test5"
+                            "test6 test7 test8 test9   test10    "
+                            "test11  test12    test13"
+                        ]
+                    )
+                ],
+                [
+                    ["test1"],
+                    ["test2"],
+                    ["test3"],
+                    ["test4"],
+                    ["test5"],
+                    ["test6"],
+                    ["test7"],
+                    ["test8"],
+                    ["test9"],
+                    ["test10"],
+                    ["test11"],
+                    ["test12"],
+                    ["test13"],
+                ],
+                [
+                    MockTable(
+                        [
+                            ["test1"],
+                            ["test2"],
+                            ["test3"],
+                            ["test4"],
+                            ["test5"],
+                            ["test6"],
+                            ["test7"],
+                            ["test8"],
+                            ["test9"],
+                            ["test10"],
+                            ["test11"],
+                            ["test12"],
+                            ["test13"],
+                        ]
+                    )
+                ],
             ),
         ],
     )
@@ -198,7 +238,24 @@ class TestLineToDataClass:
                     [24],
                 ),
             ),
-            (["1.0", "2.0"], MatchResultsICON()),  # Incorrect number of items in line.
+            (
+                ["1.0", "2.0"],
+                MatchResultsICON(
+                    [1.0],
+                    [2.0],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                ),
+            ),
         ],
     )
     def test_line_to_dataclass(self, line, expected_dataclass):
