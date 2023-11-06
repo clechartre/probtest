@@ -6,10 +6,10 @@ import os
 import re
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Set
 
 # Third-party
-from elasticsearch import Elasticsearch
+from elasticsearch import BadRequestError, Elasticsearch
 
 # Create logger FIXME setup logger file somewhere!
 logging.basicConfig(encoding="utf-8", level=logging.DEBUG)
@@ -18,7 +18,7 @@ logger = logging.getLogger(__file__)
 timing_start_regex = r"(?: +L? ?[a-zA-Z_.]+)"
 timing_element_regex = r"(?:\[?\d+[.msh]?\d*s?\]? +)"
 timing_regex = timing_start_regex + " +" + timing_element_regex + "{6,20} *(?!.)"
-header_regex = r"name +.*calls.*"
+header_regex = r"name +.*calls +t_min +min rank.*"
 date_format = "%a %d %b %Y %I:%M:%S %p %Z"
 date_pattern = r"\b\w{3} \d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2} [APM]{2} \w{4}\b"
 index = "icon"
@@ -26,19 +26,19 @@ index = "icon"
 
 @dataclass
 class MatchResultsICON:
-    name: list = field(default_factory=list)
-    calls: list = field(default_factory=list)
-    t_min: list = field(default_factory=list)
-    min_rank: list = field(default_factory=list)
-    t_avg: list = field(default_factory=list)
-    t_max: list = field(default_factory=list)
-    max_rank: list = field(default_factory=list)
-    total_min: list = field(default_factory=list)
-    total_min_rank: list = field(default_factory=list)
-    total_max: list = field(default_factory=list)
-    total_max_rank: list = field(default_factory=list)
-    total_avg: list = field(default_factory=list)
-    pe: Optional[list] = field(default_factory=list)
+    name: List[str] = field(default_factory=list)
+    calls: List[int] = field(default_factory=list)
+    t_min: List[float] = field(default_factory=list)
+    min_rank: List[int] = field(default_factory=list)
+    t_avg: List[float] = field(default_factory=list)
+    t_max: List[float] = field(default_factory=list)
+    max_rank: List[int] = field(default_factory=list)
+    total_min: List[float] = field(default_factory=list)
+    total_min_rank: List[int] = field(default_factory=list)
+    total_max: List[float] = field(default_factory=list)
+    total_max_rank: List[int] = field(default_factory=list)
+    total_avg: List[float] = field(default_factory=list)
+    pe: Optional[List[float]] = field(default_factory=list)
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -62,12 +62,62 @@ def read_logfile(file_path: str) -> str:
     Returns:
         str: file as a string
 
+    Raises:
+        FileNotFoundError: If the log file does not exist.
+        PermissionError: If the log file cannot be accessed due to permission errors.
+        IOError: If the log file is not readable or other IO related errors occur.
     """
     if not os.path.exists(file_path):
         logger.error("File not found: %s", file_path)
-        raise FileNotFoundError
-    with open(file_path, "r", encoding="utf-8") as f:
-        return f.read()
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    if not os.access(file_path, os.R_OK):
+        logger.error("File not readable: %s", file_path)
+        raise PermissionError(f"File not readable: {file_path}")
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except PermissionError as e:
+        logger.error("Permission denied: %s", e)
+        raise
+    except IOError as e:
+        logger.error("IOError when reading file: %s", e)
+        raise
+
+
+def get_experiment_name(full_file: str) -> str:
+    """Mine the experiment name for the log.
+
+    Args:
+        full_file (str): log content
+
+    Returns:
+        str: experiment name
+
+    """
+    experiment_regex = r"SLURM_JOB_NAME=(.*)"
+    match = re.search(experiment_regex, full_file)
+    if match:
+        experiment_name = match.group(1)
+        return experiment_name.strip()
+    else:
+        return ""
+
+
+def is_number_with_s(element: str):
+    """Identify whether the element is a time or a word.
+    We'll remove the s only if the element represents time
+
+
+    Args:
+        element (str)): element of the log file string
+
+    Returns:
+        bool: whether we filter the element or not
+    """
+
+    return bool(re.match(r"^\d+(\.\d+)?\(s\)$", element))
 
 
 def process_line(line: str) -> list:
@@ -88,11 +138,12 @@ def process_line(line: str) -> list:
     # Split the line into list
     elements = line.split("-")
 
-    # Remove the units (s) at the end of the element
-    elements = [elem.rstrip("s") if elem.endswith("s") else elem for elem in elements]
-
     # Filter out unwanted elements
-    elements = [elem for elem in elements if elem not in [" ", "(s)", "#", ""]]
+    elements = [
+        elem
+        for elem in elements
+        if not (is_number_with_s(elem) or elem in [" ", "#", ""])
+    ]
 
     return elements
 
@@ -172,7 +223,7 @@ def remove_formatting(tables: list) -> list:
             if len(line) == 13 or len(line) == 12:
                 new_lines.append(line)
             else:
-                logging.info("Removed line for value %s", {line[0]})
+                logging.info(f"Removed line for line: {line} ")
 
         table.lines = new_lines
 
@@ -195,7 +246,7 @@ def collect_time_stamp(file: str) -> List[datetime]:
     else:
         logger.debug("No date found in file, replacing with current time")
         now = datetime.now()
-        date_objects = datetime.strptime(now, date_format)
+        date_objects = datetime.strftime(now, date_format)
 
     return date_objects
 
@@ -204,31 +255,38 @@ def line_to_dataclass(line: list) -> MatchResultsICON:
     """Store line information in dataclass.
 
     Args:
-        tables (list): tables extracted from the log
+        line (list): A list containing the values extracted from a log line.
 
     Returns:
-        MatchResultsICON: information stored into a dataclass
+        MatchResultsICON: Information stored into a dataclass.
 
     """
     results_dataclass = MatchResultsICON()
-    # List of attribute names in the order they should be accessed
     attribute_names = [field.name for field in fields(MatchResultsICON)]
 
-    # Iterate through the line items
     for i, value in enumerate(line):
-        try:
-            # If the current attribute is supposed to be a float
-            value = float(value)
-            getattr(results_dataclass, attribute_names[i]).append(value)
-        except ValueError:
-            # Here add processing if time also is in the form of 1mxxs
-            match = re.search(r"(\d+)m(\d+)", value)
-            if match:
-                minutes, seconds = match.groups()
-                total_seconds = float(minutes) * 60 + float(seconds)
-                getattr(results_dataclass, attribute_names[i]).append(total_seconds)
+        if isinstance(value, str) and value.endswith("s"):
+            if value[:-1].replace(".", "", 1).isdigit():
+                value = float(value[:-1])
             else:
-                getattr(results_dataclass, attribute_names[i]).append(value)
+                # Handle the case where the format is like '2m30s' for 2 minutes and 30 seconds
+                match = re.search(r"(\d+)m(\d+)s", value)
+                if match:
+                    minutes, seconds = match.groups()
+                    value = float(minutes) * 60 + float(seconds)
+
+        try:
+            value = float(value) if not isinstance(value, float) else value
+
+            if value < 0:
+                value = abs(value)
+
+            if value == 0:
+                value = int(value)
+        except ValueError:
+            pass
+
+        getattr(results_dataclass, attribute_names[i]).append(value)
 
     return results_dataclass
 
@@ -241,10 +299,28 @@ def update_kibana(es: Elasticsearch, result_dict: dict):
         summary (dict): summary statistics to ingest
 
     """
-    es.index(index="icon", document=result_dict)
+    es.index(index="icon-test", document=result_dict)
 
 
-def log_mining(directory_path: str, es: Elasticsearch) -> None:
+def get_already_mined_dirs(log_file_path: str) -> Set[str]:
+    """Read the log file and get a set of already mined directories."""
+    if not os.path.exists(log_file_path):
+        open(log_file_path, "w").close()
+
+    # Read the existing log file and collect the mined directories
+    with open(log_file_path, "r") as file:
+        mined_dirs = {line.strip() for line in file}
+
+    return mined_dirs
+
+
+def add_mined_dir(log_file_path: str, directory_path: str) -> None:
+    """Add a newly mined directory to the log file."""
+    with open(log_file_path, "a") as file:
+        file.write(directory_path + "\n")
+
+
+def log_mining(directory_path: str, es: Elasticsearch, log_file_path: str) -> None:
     """Process file into Kibana compatible format.
 
     Args:
@@ -256,33 +332,67 @@ def log_mining(directory_path: str, es: Elasticsearch) -> None:
     """
     logger.info("Processing files in directory: %s", directory_path)
 
-    for filename in os.listdir(directory_path):
-        if filename.startswith("LOG."):
-            logger.info("Processing file: %s", filename)
+    # Get the set of already mined directories
+    mined_dirs = get_already_mined_dirs(log_file_path)
 
-            file_path = os.path.join(directory_path, filename)
+    for root, dirs, files in os.walk(directory_path):
+        # Check if the current directory has been mined
+        if root in mined_dirs:
+            continue
 
-            # Mine file
-            full_file = read_logfile(file_path)
-            result = isolate_table(full_file, header_regex)
-            if result is None:
-                logger.info("No result table found, exiting")
-                break
-            tables = remove_formatting(result)
+        for filename in files:
+            if filename.startswith("LOG."):
+                logger.info("Processing file: %s", filename)
+                file_path = os.path.join(root, filename)
 
-            # Process the time stamp
-            all_dates = []
-            all_dates.extend(collect_time_stamp(full_file))
+                # Mine file
+                try:
+                    full_file = read_logfile(file_path)
+                except (FileNotFoundError, PermissionError, IOError) as e:
+                    logger.error("Could not read file, %s error", e)
+                result = isolate_table(full_file, header_regex)
+                if result is None:
+                    logger.info("No result table found, exiting")
+                    break
+                tables = remove_formatting(result)
 
-            # Sort and retrieve the latest date
-            all_dates.sort()
-            latest_date = all_dates[-1] if all_dates else None
+                # Process the time stamp
+                all_dates = []
+                all_dates.append(collect_time_stamp(full_file))
 
-            # Make the result dictionary
-            for table in tables:
-                for line in table.lines[1:]:
-                    results_dataclass = line_to_dataclass(line)
-                    result_dict = asdict(results_dataclass)
-                    result_dict["time_stamp"] = latest_date
-                    # Update onto monitoring stack
-                    update_kibana(es, result_dict)
+                # Sort and retrieve the latest date
+                all_dates.sort()
+                latest_date = all_dates[-1] if all_dates else None
+
+                # Check if latest_date is a list, if so, take the first element
+                if isinstance(latest_date, list):
+                    latest_date = latest_date[0]
+
+                if not isinstance(latest_date, datetime):
+                    try:
+                        latest_date = datetime.strptime(latest_date, date_format)
+                    except ValueError as e:
+                        logging.debug(f"Error converting latest_date to datetime: {e}")
+                        latest_date = datetime.now()
+
+                # Get the experiment name
+                experiment_name = get_experiment_name(full_file)
+
+                # Make the result dictionary
+                for table in tables:
+                    if table.lines[1:][0] == "wrt_output":
+                        break
+                    for line in table.lines[1:]:
+                        results_dataclass = line_to_dataclass(line)
+                        result_dict = asdict(results_dataclass)
+                        result_dict["time_stamp"] = latest_date
+                        result_dict["experiment"] = experiment_name
+                        # Update onto monitoring stack
+                        try:
+                            update_kibana(es, result_dict)
+                        except BadRequestError as e:
+                            logging.error("Error %s skipping line %s", e, line)
+                            continue
+
+                # Add to log if file has been correctly processed
+                add_mined_dir(log_file_path, root)

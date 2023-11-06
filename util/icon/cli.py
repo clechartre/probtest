@@ -25,14 +25,20 @@ from mining_util import log_mining
     required=True,
     help="The password to connect to Elasticsearch",
 )
-def main(directory_path: Any, password: str):
+@click.option(
+    "--log_file_path",
+    "-l",
+    required=True,
+    help="The path to the log file",
+)
+def main(directory_path: Any, password: str, log_file_path: str):
     """CLI for processing summary files in a directory."""
     es = Elasticsearch(
         "https://elastic.mch.eck.cscs.ch:9200",
         basic_auth=("elastic", password),
     )
 
-    log_mining(directory_path, es)
+    log_mining(directory_path, es, log_file_path)
 
 
 if __name__ == "__main__":

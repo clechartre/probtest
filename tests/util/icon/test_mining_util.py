@@ -4,7 +4,7 @@
 import contextlib
 import logging
 import unittest
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from unittest import mock
 
@@ -15,6 +15,7 @@ from elasticsearch import Elasticsearch
 from util.icon.mining_util import (
     MatchResultsICON,
     collect_time_stamp,
+    get_experiment_name,
     line_to_dataclass,
     log_mining,
     process_line,
@@ -76,10 +77,11 @@ class TestProcessLine:
         "line, expected_process_line",
         [
             ("some test content", ["some", "test", "content"]),
-            ("1.85674s      18", ["1.85674", "18"]),
             ("some-test-content", ["some", "test", "content"]),
             ("some/test/content", ["some/test/content"]),
             ("Lsome test content", ["some", "test", "content"]),
+            ("some tests content", ["some", "tests", "content"]),
+            ("some 1m37s contents", ["some", "1m37s", "contents"]),
         ],
     )
     def test_process_line(self, line, expected_process_line: list):
@@ -97,9 +99,7 @@ class TestRemoveFormatting:
                 [
                     MockTable(
                         [
-                            "test1   test2     test3 test4 test5"
-                            "test6 test7 test8 test9   test10    "
-                            "test11  test12    test13"
+                            "test1   test2 test3 test4 test5 test6 test7 test8 test9   test10  test11  test12    test13"
                         ]
                     )
                 ],
@@ -144,7 +144,6 @@ class TestRemoveFormatting:
         self, mock_process_line, tables, mocked_processed_lines, expected_output
     ):
         mock_process_line.side_effect = mocked_processed_lines
-
         result = remove_formatting(tables)
         for r, e in zip(result, expected_output):
             assert r.lines == e.lines
@@ -178,89 +177,89 @@ class TestLineToDataClass:
                 [
                     "name1",
                     "1",
-                    "2",
+                    "2.0",
                     "3",
-                    "4",
-                    "5",
+                    "4.0",
+                    "5.0",
                     "6",
-                    "7",
+                    "7.0",
                     "8",
-                    "9",
+                    "9.0",
                     "10",
-                    "11",
-                    "12",
+                    "11.0",
                 ],
                 MatchResultsICON(
-                    ["name1"],
-                    [1],
-                    [2],
-                    [3],
-                    [4],
-                    [5],
-                    [6],
-                    [7],
-                    [8],
-                    [9],
-                    [10],
-                    [11],
-                    [12],
+                    name=["name1"],
+                    calls=[1],
+                    t_min=[2.0],
+                    min_rank=[3],
+                    t_avg=[4.0],
+                    t_max=[5.0],
+                    max_rank=[6],
+                    total_min=[7.0],
+                    total_min_rank=[8],
+                    total_max=[9.0],
+                    total_max_rank=[10],
+                    total_avg=[11.0],
+                    pe=[],
                 ),
             ),
             (
                 [
                     "name2",
+                    "12",
+                    "13s",
                     "14",
-                    "hello",
-                    "15",
-                    "16",
-                    "17",
+                    "15m16s",
+                    "17.0",
                     "18",
-                    "19",
+                    "19s",
                     "20",
-                    "21",
+                    "21.0",
                     "22",
-                    "23",
-                    "24",
+                    "23.0",
                 ],
                 MatchResultsICON(
-                    ["name2"],
-                    [14],
-                    ["hello"],
-                    [15],
-                    [16],
-                    [17],
-                    [18],
-                    [19],
-                    [20],
-                    [21],
-                    [22],
-                    [23],
-                    [24],
+                    name=["name2"],
+                    calls=[12],
+                    t_min=[13.0],
+                    min_rank=[14],
+                    t_avg=[916.0],
+                    t_max=[17.0],
+                    max_rank=[18],
+                    total_min=[19.0],
+                    total_min_rank=[20],
+                    total_max=[21.0],
+                    total_max_rank=[22],
+                    total_avg=[23.0],
+                    pe=[],
                 ),
             ),
             (
-                ["1.0", "2.0"],
+                ["1.0", "0.0", "2.0s"],
                 MatchResultsICON(
-                    [1.0],
-                    [2.0],
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
+                    name=[1.0],
+                    calls=[0.0],
+                    t_min=[2.0],
+                    min_rank=[],
+                    t_avg=[],
+                    t_max=[],
+                    max_rank=[],
+                    total_min=[],
+                    total_min_rank=[],
+                    total_max=[],
+                    total_max_rank=[],
+                    total_avg=[],
+                    pe=[],
                 ),
             ),
         ],
     )
     def test_line_to_dataclass(self, line, expected_dataclass):
         result = line_to_dataclass(line)
-        assert result == expected_dataclass
+        assert asdict(result) == asdict(
+            expected_dataclass
+        ), f"Expected {asdict(expected_dataclass)}, but got {asdict(result)}"
 
 
 class TestLogging(unittest.TestCase):
@@ -268,10 +267,15 @@ class TestLogging(unittest.TestCase):
         self.mock_es = mock.MagicMock(spec=Elasticsearch)
 
     def test_log_mining_calls_update_kibana(self):
+        mock_log_file_path = "/mocked/directory/mined_dirs.log"
         with disabled_logging():
             with mock.patch(
                 "os.listdir", return_value=["LOG.sample_file_content.txt"]
-            ), mock.patch("os.path.join", return_value="LOG.file"), mock.patch(
+            ), mock.patch(
+                "util.icon.mining_util.get_already_mined_dirs", return_value=[""]
+            ), mock.patch(
+                "os.path.join", return_value="LOG.file"
+            ), mock.patch(
                 "util.icon.mining_util.read_logfile", return_value="sample_file_content"
             ), mock.patch(
                 "util.icon.mining_util.isolate_table",
@@ -292,6 +296,40 @@ class TestLogging(unittest.TestCase):
                 "util.icon.mining_util.Elasticsearch", return_value=self.mock_es
             ):
                 directory_path = "/directory/path"
-                log_mining(directory_path, self.mock_es)
+                log_mining(directory_path, self.mock_es, mock_log_file_path)
                 # Check if update_kibana was called.
                 self.mock_es.index.assert_called()
+
+
+# class TestExperimentName:
+#     @pytest.mark.parametrize(
+#         "full_file,expected",
+#         [
+#             (
+#                 """
+#     SLURMD_NODENAME=nid003161
+#     SLURM_JOB_NAME=check.mch_bench_r19b08_kenda1.run
+#     SLURM_JOB_UID=24103
+#     """,
+#                 "check.mch_bench_r19b08_kenda1.run",
+#             ),
+#             (
+#                 """
+#     SLURMD_NODENAME=nid003161
+#     SLURM_JOB_UID=24103
+#     """,
+#                 "",
+#             ),
+#             (
+#                 """
+#     SLURMD_NODENAME=nid003161
+#     SLURM_JOB_NAME=    check.mch_bench_r19b08_kenda1.run
+#     SLURM_JOB_UID=24103
+#     """,
+#                 "check.mch_bench_r19b08_kenda1.run",
+#             ),
+#         ],
+#     )
+#     def test_get_experiment_name(full_file, expected):
+#         exp = get_experiment_name(full_file)
+#         assert exp == expected
