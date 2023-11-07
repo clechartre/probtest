@@ -15,7 +15,6 @@ from elasticsearch import Elasticsearch
 from util.icon.mining_util import (
     MatchResultsICON,
     collect_time_stamp,
-    get_experiment_name,
     line_to_dataclass,
     log_mining,
     process_line,
@@ -90,63 +89,67 @@ class TestProcessLine:
             assert processed_line == expected_process_line
 
 
-class TestRemoveFormatting:
-    @mock.patch("util.icon.mining_util.process_line")
-    @pytest.mark.parametrize(
-        "tables, mocked_processed_lines, expected_output",
-        [
-            (
+class TestRemoveFormatting(unittest.TestCase):
+    def setUp(self):
+        self.tables = [
+            MockTable(
                 [
-                    MockTable(
-                        [
-                            "test1   test2 test3 test4 test5 test6 test7 test8 test9   test10  test11  test12    test13"
-                        ]
-                    )
-                ],
-                [
-                    ["test1"],
-                    ["test2"],
-                    ["test3"],
-                    ["test4"],
-                    ["test5"],
-                    ["test6"],
-                    ["test7"],
-                    ["test8"],
-                    ["test9"],
-                    ["test10"],
-                    ["test11"],
-                    ["test12"],
-                    ["test13"],
-                ],
-                [
-                    MockTable(
-                        [
-                            ["test1"],
-                            ["test2"],
-                            ["test3"],
-                            ["test4"],
-                            ["test5"],
-                            ["test6"],
-                            ["test7"],
-                            ["test8"],
-                            ["test9"],
-                            ["test10"],
-                            ["test11"],
-                            ["test12"],
-                            ["test13"],
-                        ]
-                    )
-                ],
+                    "test1   test2 test3 test4 test5 test6 test7 test8 test9"
+                    + " test10  test11  test12    test13"
+                ]
             ),
-        ],
-    )
-    def test_remove_formatting(
-        self, mock_process_line, tables, mocked_processed_lines, expected_output
-    ):
-        mock_process_line.side_effect = mocked_processed_lines
-        result = remove_formatting(tables)
+            MockTable(
+                [
+                    "test1   test2 test3 test4 test5 test6 test7 test8 test9"
+                    + " test10  test11  test12    test13"
+                ]
+            ),
+        ]
+
+    def test_remove_formatting(self):
+        expected_output = [
+            MockTable(
+                [
+                    [
+                        "test1",
+                        "test2",
+                        "test3",
+                        "test4",
+                        "test5",
+                        "test6",
+                        "test7",
+                        "test8",
+                        "test9",
+                        "test10",
+                        "test11",
+                        "test12",
+                        "test13",
+                    ]
+                ]
+            ),
+            MockTable(
+                [
+                    [
+                        "test1",
+                        "test2",
+                        "test3",
+                        "test4",
+                        "test5",
+                        "test6",
+                        "test7",
+                        "test8",
+                        "test9",
+                        "test10",
+                        "test11",
+                        "test12",
+                        "test13",
+                    ]
+                ]
+            ),
+        ]
+        result = remove_formatting(self.tables)
         for r, e in zip(result, expected_output):
-            assert r.lines == e.lines
+            self.assertEqual(r.lines, e.lines)
 
 
 date_format = "%a %d %b %Y %I:%M:%S %p %Z"
@@ -274,6 +277,8 @@ class TestLogging(unittest.TestCase):
             ), mock.patch(
                 "util.icon.mining_util.get_already_mined_dirs", return_value=[""]
             ), mock.patch(
+                "os.walk", return_value=[("root", ["dir"], ["LOG.sample_file_content"])]
+            ), mock.patch(
                 "os.path.join", return_value="LOG.file"
             ), mock.patch(
                 "util.icon.mining_util.read_logfile", return_value="sample_file_content"
@@ -294,6 +299,8 @@ class TestLogging(unittest.TestCase):
                 return_value={"names": "name1", "calls": "call1"},
             ), mock.patch(
                 "util.icon.mining_util.Elasticsearch", return_value=self.mock_es
+            ), mock.patch(
+                "util.icon.mining_util.add_mined_dir"
             ):
                 directory_path = "/directory/path"
                 log_mining(directory_path, self.mock_es, mock_log_file_path)
