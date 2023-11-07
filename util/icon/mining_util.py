@@ -299,7 +299,7 @@ def update_kibana(es: Elasticsearch, result_dict: dict):
         summary (dict): summary statistics to ingest
 
     """
-    es.index(index="icon-test", document=result_dict)
+    es.index(index="icon", document=result_dict)
 
 
 def get_already_mined_dirs(log_file_path: str) -> Set[str]:
